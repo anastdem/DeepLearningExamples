@@ -32,7 +32,7 @@ class WaveGlowLoss(torch.nn.Module):
         super(WaveGlowLoss, self).__init__()
         self.sigma = sigma
 
-    def forward(self, model_output, clean_audio):
+    def forward(self, model_output, clean_audio, model_input):
         # clean_audio is unused;
         z, log_s_list, log_det_W_list = model_output
         for i, log_s in enumerate(log_s_list):

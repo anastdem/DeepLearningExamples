@@ -26,7 +26,6 @@
 # *****************************************************************************
 
 import argparse
-
 from tacotron2.text import symbols
 
 
@@ -104,5 +103,25 @@ def tacotron2_parser(parent, add_help=False):
                          help='Postnet kernel size')
     postnet.add_argument('--postnet-n-convolutions', default=5, type=int,
                          help='Number of postnet convolutions')
+
+    speakers = parser.add_argument_group('speakers parameters')
+    speakers.add_argument('--n_speakers', default=1, type=int,
+                          help='Number of speakers')
+    speakers.add_argument('--speaker_emb_weight', default=1, type=int,
+                          help='Speakers embeddings weight')
+
+    gst = parser.add_argument_group('gst parameters')
+    gst.add_argument('--use_gst', action='store_true',
+                     help='Use gst tokens')
+    gst.add_argument('--gst_tokens', default=10, type=int,
+                     help='Number of gst tokens')
+    gst.add_argument('--gst_num_heads', default=8, type=int,
+                     help='Number of heads in gst tokens')
+
+    gst_ref_enc = parser.add_argument_group('gst reference encoder parameters')
+    gst_ref_enc.add_argument('--ref_enc_filters', default=[32, 32, 64, 64, 128, 128], type=int,
+                             help='Dimention of filters in GST reference encoder')
+    gst_ref_enc.add_argument('--p_gst_dropout', default=0.1, type=float,
+                             help='Dropout probability in GST reference encoder')
 
     return parser

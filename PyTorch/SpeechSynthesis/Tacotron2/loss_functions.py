@@ -31,9 +31,11 @@ from tacotron2.loss_function import Tacotron2Loss
 from waveglow.loss_function import WaveGlowLoss
 
 
-def get_loss_function(loss_function, sigma=1.0):
+def get_loss_function(loss_function, sigma=1.0, gate_positive_weight=1.0, use_guided_attention_loss=False,
+                      loss_attention_weight=1.0, diagonal_factor=0.2, use_lpips_loss=False):
     if loss_function == 'Tacotron2':
-        loss = Tacotron2Loss()
+        loss = Tacotron2Loss(gate_positive_weight, use_guided_attention_loss,
+                             loss_attention_weight, diagonal_factor, use_lpips_loss)
     elif loss_function == 'WaveGlow':
         loss = WaveGlowLoss(sigma=sigma)
     else:

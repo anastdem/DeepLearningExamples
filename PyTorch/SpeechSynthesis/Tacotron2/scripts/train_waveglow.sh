@@ -1,2 +1,1 @@
-mkdir -p output
-python -m multiproc train.py -m WaveGlow -o ./output/ -lr 1e-4 --epochs 1501 -bs 4 --segment-length  8000 --weight-decay 0 --grad-clip-thresh 3.4028234663852886e+38 --cudnn-enabled --cudnn-benchmark --log-file nvlog.json
+CUDA_VISIBLE_DEVICES=2,3 python -m multiproc train.py -m WaveGlow -o ./checkpoints/output_rusln_WG_v0/ -lr 1e-4 --epochs 1501 -bs 32 --segment-length  8000 --weight-decay 0 --grad-clip-thresh 3.4028234663852886e+38 --cudnn-enabled --cudnn-benchmark --dist-url tcp://localhost:23457

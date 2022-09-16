@@ -50,7 +50,7 @@ class MelAudioLoader(torch.utils.data.Dataset):
         audio, sampling_rate = load_wav_to_torch(filename)
 
         if sampling_rate != self.stft.sampling_rate:
-            raise ValueError("{} {} SR doesn't match target {} SR".format(
+            raise ValueError("{} SR doesn't match target {} SR".format(
                 sampling_rate, self.stft.sampling_rate))
 
         # Take segment

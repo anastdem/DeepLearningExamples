@@ -43,6 +43,10 @@ from dllogger import StdOutBackend, JSONStreamBackend, Verbosity
 
 from waveglow.denoiser import Denoiser
 
+import warnings
+warnings.filterwarnings("ignore")
+
+
 def parse_args(parser):
     """
     Parse commandline arguments.
@@ -157,7 +161,7 @@ def prepare_input_sequence(texts, cpu_run=False):
     d = []
     for i,text in enumerate(texts):
         d.append(torch.IntTensor(
-            text_to_sequence(text, ['english_cleaners'])[:]))
+            text_to_sequence(text, ['basic_cleaners'])[:]))
 
     text_padded, input_lengths = pad_sequences(d)
     if not cpu_run:
@@ -212,11 +216,11 @@ def main():
     if not args.cpu:
         denoiser.cuda()
 
-    jitted_tacotron2 = torch.jit.script(tacotron2)
+    # jitted_tacotron2 = torch.jit.script(tacotron2)
 
     texts = []
     try:
-        f = open(args.input, 'r')
+        f = open(args.input, 'r', encoding='utf8')
         texts = f.readlines()
     except:
         print("Could not read file")
@@ -230,7 +234,8 @@ def main():
             input_lengths = input_lengths.cuda()
         for i in range(3):
             with torch.no_grad():
-                mel, mel_lengths, _ = jitted_tacotron2(sequence, input_lengths)
+                # mel, mel_lengths, _ = jitted_tacotron2(sequence, input_lengths)
+                mel, mel_lengths, _ = tacotron2(sequence, input_lengths)
                 _ = waveglow(mel)
 
     measurements = {}
@@ -238,7 +243,8 @@ def main():
     sequences_padded, input_lengths = prepare_input_sequence(texts, args.cpu)
 
     with torch.no_grad(), MeasureTime(measurements, "tacotron2_time", args.cpu):
-        mel, mel_lengths, alignments = jitted_tacotron2(sequences_padded, input_lengths)
+        # mel, mel_lengths, alignments = jitted_tacotron2(sequences_padded, input_lengths)
+        mel, mel_lengths, alignments = tacotron2(sequences_padded, input_lengths)
 
     with torch.no_grad(), MeasureTime(measurements, "waveglow_time", args.cpu):
         audios = waveglow(mel, sigma=args.sigma_infer)
@@ -246,7 +252,7 @@ def main():
     with torch.no_grad(), MeasureTime(measurements, "denoiser_time", args.cpu):
         audios = denoiser(audios, strength=args.denoising_strength).squeeze(1)
 
-    print("Stopping after",mel.size(2),"decoder steps")
+    print("Stopping after", mel.size(2), "decoder steps")
     tacotron2_infer_perf = mel.size(0)*mel.size(2)/measurements['tacotron2_time']
     waveglow_infer_perf = audios.size(0)*audios.size(1)/measurements['waveglow_time']
 
@@ -260,15 +266,16 @@ def main():
     for i, audio in enumerate(audios):
 
         plt.imshow(alignments[i].float().data.cpu().numpy().T, aspect="auto", origin="lower")
-        figure_path = os.path.join(args.output,"alignment_"+str(i)+args.suffix+".png")
+        figure_path = os.path.join(args.output, "alignment_" + str(i) + args.suffix + ".png")
         plt.savefig(figure_path)
 
         audio = audio[:mel_lengths[i]*args.stft_hop_length]
-        audio = audio/torch.max(torch.abs(audio))
-        audio_path = os.path.join(args.output,"audio_"+str(i)+args.suffix+".wav")
+        # audio = audio/torch.max(torch.abs(audio))
+        audio_path = os.path.join(args.output, "audio_" + str(i) + args.suffix + ".wav")
         write(audio_path, args.sampling_rate, audio.cpu().numpy())
 
     DLLogger.flush()
+
 
 if __name__ == '__main__':
     main()

@@ -3,5 +3,9 @@ numpy
 inflect
 librosa
 scipy
+lpips
+wandb
 resampy==0.3.1
 git+https://github.com/NVIDIA/dllogger@v0.1.0#egg=dllogger
+git+https://github.com/sovaai/sova-tts-tps.git
+

@@ -126,7 +126,17 @@ def get_model_config(model_name, args):
             postnet_embedding_dim=args.postnet_embedding_dim,
             postnet_kernel_size=args.postnet_kernel_size,
             postnet_n_convolutions=args.postnet_n_convolutions,
-            decoder_no_early_stopping=args.decoder_no_early_stopping
+            decoder_no_early_stopping=args.decoder_no_early_stopping,
+            # GST
+            use_gst=args.use_gst,
+            gst_tokens=args.gst_tokens,
+            gst_num_heads=args.gst_num_heads,
+            # GST reference encoder
+            ref_enc_filters=args.ref_enc_filters,
+            p_gst_dropout=args.p_gst_dropout,
+            # Speakers
+            n_speakers=args.n_speakers,
+            speaker_emb_weight=args.speaker_emb_weight,
         )
         return model_config
     elif model_name == 'WaveGlow':

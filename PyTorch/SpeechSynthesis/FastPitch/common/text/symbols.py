@@ -11,7 +11,7 @@ from .cmudict import valid_symbols
 _arpabet = ['@' + s for s in valid_symbols]
 
 
-def get_symbols(symbol_set='english_basic'):
+def get_symbols(symbol_set='russian_basic'):
     if symbol_set == 'english_basic':
         _pad = '_'
         _punctuation = '!\'(),.:;? '
@@ -31,6 +31,14 @@ def get_symbols(symbol_set='english_basic'):
         _accented = 'áçéêëñöøćž'
         _letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
         symbols = list(_punctuation + _math + _special + _accented + _letters) + _arpabet
+    elif symbol_set == 'russian_basic':
+        _pad = '_'
+        _punctuation = '!\'"(),.:;?+ '
+        # _math = '#%&*+-/[]()'
+        _special = '-'
+        # _accented = 'áçéêëñöøćž'
+        _letters = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя'
+        symbols = list(_pad + _punctuation + _special + _letters)
     else:
         raise Exception("{} symbol set does not exist".format(symbol_set))
 

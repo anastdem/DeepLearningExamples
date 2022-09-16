@@ -25,7 +25,7 @@
 #
 # *****************************************************************************
 import torch
-torch._C._jit_set_autocast_mode(False)
+# torch._C._jit_set_autocast_mode(False)
 from torch.autograd import Variable
 import torch.nn.functional as F
 
@@ -84,7 +84,7 @@ class Invertible1x1Conv(torch.nn.Module):
             # Reverse computation
             W_inverse = W.float().inverse()
             W_inverse = Variable(W_inverse[..., None])
-            if z.type() == 'torch.cuda.HalfTensor' or z.type() == 'torch.HalfTensor':
+            if z.type() == 'torch.cuda.HalfTensor':# or z.type() == 'torch.HalfTensor':
                 W_inverse = W_inverse.half()
             self.W_inverse = W_inverse
         z = F.conv1d(z, self.W_inverse, bias=None, stride=1, padding=0)
@@ -319,7 +319,7 @@ class WaveGlow(torch.nn.Module):
                 audio = torch.cat((z[:, :self.n_early_size, :], audio), 1)
                 z = z[:, self.n_early_size:self.n_group, :]
 
-        audio = audio.permute(0,2,1).contiguous().view(batch_size, (length_spect_group * self.n_group))
+        audio = audio.permute(0, 2, 1).contiguous().view(batch_size, (length_spect_group * self.n_group))
 
         return audio
 

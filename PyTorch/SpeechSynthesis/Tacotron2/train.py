@@ -44,9 +44,10 @@ import loss_functions
 import data_functions
 from tacotron2_common.utils import ParseFromConfigFile
 
-import dllogger as DLLogger
-from dllogger import StdOutBackend, JSONStreamBackend, Verbosity
-
+import wandb
+from logger import Tacotron2Logger
+import warnings
+warnings.filterwarnings("ignore")
 
 def parse_args(parser):
     """
@@ -59,15 +60,17 @@ def parse_args(parser):
                         default='./', help='Path to dataset')
     parser.add_argument('-m', '--model-name', type=str, default='', required=True,
                         help='Model to train')
-    parser.add_argument('--log-file', type=str, default='nvlog.json',
-                        help='Filename for logging')
+    parser.add_argument('--wandb', type=str, default='',
+                        help='wandb project name')
+    parser.add_argument('--logdir', type=str, default='logdir',
+                        help='Folder for logging')
     parser.add_argument('--anneal-steps', nargs='*',
                         help='Epochs after which decrease learning rate')
     parser.add_argument('--anneal-factor', type=float, choices=[0.1, 0.3], default=0.1,
                         help='Factor for annealing learning rate')
 
     parser.add_argument('--config-file', action=ParseFromConfigFile,
-                         type=str, help='Path to configuration file')
+                        type=str, help='Path to configuration file')
     parser.add_argument('--seed', default=None, type=int,
                         help='Seed for random number generators')
 
@@ -75,7 +78,7 @@ def parse_args(parser):
     training = parser.add_argument_group('training setup')
     training.add_argument('--epochs', type=int, required=True,
                           help='Number of total epochs to run')
-    training.add_argument('--epochs-per-checkpoint', type=int, default=50,
+    training.add_argument('--iters-per-checkpoint', type=int, default=1000,
                           help='Number of epochs per checkpoint')
     training.add_argument('--checkpoint-path', type=str, default='',
                           help='Checkpoint path to resume training')
@@ -111,13 +114,13 @@ def parse_args(parser):
     dataset.add_argument('--load-mel-from-disk', action='store_true',
                          help='Loads mel spectrograms from disk instead of computing them on the fly')
     dataset.add_argument('--training-files',
-                         default='filelists/ljs_audio_text_train_filelist.txt',
+                         default='filelists/ruslan_audio_text_train_emp.txt',
                          type=str, help='Path to training filelist')
     dataset.add_argument('--validation-files',
-                         default='filelists/ljs_audio_text_val_filelist.txt',
+                         default='filelists/ruslan_audio_text_val_emp.txt',
                          type=str, help='Path to validation filelist')
     dataset.add_argument('--text-cleaners', nargs='*',
-                         default=['english_cleaners'], type=str,
+                         default=['basic_cleaners'], type=str,
                          help='Type of text cleaners for input text')
 
     # audio parameters
@@ -154,6 +157,17 @@ def parse_args(parser):
     benchmark = parser.add_argument_group('benchmark')
     benchmark.add_argument('--bench-class', type=str, default='')
 
+    loss = parser.add_argument_group('loss')
+    loss.add_argument('--gate_positive_weight', default=1.0, type=float,
+                      help='gate positive weight for loss')
+    loss.add_argument('--use_guided_attention_loss', action='store_true',
+                      help='Use guided attention loss')
+    loss.add_argument('--loss_attention_weight', default=1.0, type=float,
+                      help='loss attention weight')
+    loss.add_argument('--diagonal_factor', default=0.2, type=float,
+                      help='diagonal factor for loss attention')
+    loss.add_argument('--use_lpips_loss', action='store_true',
+                      help='Use lpips loss')
     return parser
 
 
@@ -161,7 +175,7 @@ def reduce_tensor(tensor, num_gpus):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     if rt.is_floating_point():
-        rt = rt/num_gpus
+        rt = rt / num_gpus
     else:
         rt = torch.div(rt, num_gpus, rounding_mode='floor')
     return rt
@@ -184,7 +198,6 @@ def init_distributed(args, world_size, rank, group_name):
 
 def save_checkpoint(model, optimizer, scaler, epoch, config, output_dir,
                     model_name, local_rank, world_size):
-
     random_rng_state = torch.random.get_rng_state().cuda()
     cuda_rng_state = torch.cuda.get_rng_state(local_rank).cuda()
 
@@ -237,10 +250,9 @@ def get_last_checkpoint_filename(output_dir, model_name):
 
 
 def load_checkpoint(model, optimizer, scaler, epoch, filepath, local_rank):
-
     checkpoint = torch.load(filepath, map_location='cpu')
 
-    epoch[0] = checkpoint['epoch']+1
+    epoch[0] = checkpoint['epoch'] + 1
     device_id = local_rank % torch.cuda.device_count()
     torch.cuda.set_rng_state(checkpoint['cuda_rng_state_all'][device_id])
     if 'random_rng_states_all' in checkpoint:
@@ -270,8 +282,8 @@ def evaluating(model):
             model.train()
 
 
-def validate(model, criterion, valset, epoch, batch_iter, batch_size,
-             world_size, collate_fn, distributed_run, perf_bench, batch_to_gpu, amp_run):
+def validate(model_name, model, criterion, valset, iteration, batch_size, logger, world_size,
+             collate_fn, distributed_run, perf_bench, batch_to_gpu, amp_run, local_rank):
     """Handles all the validation scoring and printing"""
     with evaluating(model), torch.no_grad():
         val_sampler = DistributedSampler(valset) if distributed_run else None
@@ -289,15 +301,15 @@ def validate(model, criterion, valset, epoch, batch_iter, batch_size,
             iter_start_time = time.perf_counter()
 
             x, y, num_items = batch_to_gpu(batch)
-            #AMP upstream autocast
+            # AMP upstream autocast
             with torch.cuda.amp.autocast(enabled=amp_run):
                 y_pred = model(x)
-                loss = criterion(y_pred, y)
+                loss = criterion(y_pred, y, x)
 
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, world_size).item()
                 reduced_num_items = reduce_tensor(num_items.data, 1).item()
-            else:               #
+            else:  #
                 reduced_val_loss = loss.item()
                 reduced_num_items = num_items.item()
             val_loss += reduced_val_loss
@@ -306,47 +318,45 @@ def validate(model, criterion, valset, epoch, batch_iter, batch_size,
             iter_stop_time = time.perf_counter()
             iter_time = iter_stop_time - iter_start_time
 
-            items_per_sec = reduced_num_items/iter_time
-            DLLogger.log(step=(epoch, batch_iter, i), data={'val_items_per_sec': items_per_sec})
+            items_per_sec = reduced_num_items / iter_time
+            # DLLogger.log(step=(epoch, batch_iter, i), data={'val_items_per_sec': items_per_sec})
             val_items_per_sec += items_per_sec
             num_iters += 1
 
-        val_loss = val_loss/num_iters
-        val_items_per_sec = val_items_per_sec/num_iters
+        val_loss = val_loss / num_iters
+        val_items_per_sec = val_items_per_sec / num_iters
 
+        if local_rank == 0:
+            print("Validation loss {}: {:9f}  {} items/s".format(iteration, val_loss, val_items_per_sec))
+            if model_name == 'Tacotron2':
+                logger.log_validation(val_loss, model, y, y_pred, iteration)
+            else:
+                logger.add_scalar("validation.loss", val_loss, iteration)
 
-        DLLogger.log(step=(epoch,), data={'val_loss': val_loss})
-        DLLogger.log(step=(epoch,), data={'val_items_per_sec': val_items_per_sec})
-
-        return val_loss, val_items_per_sec
 
 
 def adjust_learning_rate(iteration, epoch, optimizer, learning_rate,
                          anneal_steps, anneal_factor, rank):
-
     p = 0
     if anneal_steps is not None:
         for i, a_step in enumerate(anneal_steps):
             if epoch >= int(a_step):
-                p = p+1
+                p = p + 1
 
     if anneal_factor == 0.3:
-        lr = learning_rate*((0.1 ** (p//2))*(1.0 if p % 2 == 0 else 0.3))
+        lr = learning_rate * ((0.1 ** (p // 2)) * (1.0 if p % 2 == 0 else 0.3))
     else:
-        lr = learning_rate*(anneal_factor ** p)
-
-    if optimizer.param_groups[0]['lr'] != lr:
-        DLLogger.log(step=(epoch, iteration), data={'learning_rate changed': str(optimizer.param_groups[0]['lr'])+" -> "+str(lr)})
+        lr = learning_rate * (anneal_factor ** p)
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 
 def main():
-
     parser = argparse.ArgumentParser(description='PyTorch Tacotron 2 Training')
     parser = parse_args(parser)
     args, _ = parser.parse_known_args()
+
 
     if 'LOCAL_RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         local_rank = int(os.environ['LOCAL_RANK'])
@@ -361,22 +371,6 @@ def main():
         torch.manual_seed(args.seed + local_rank)
         np.random.seed(args.seed + local_rank)
 
-    if local_rank == 0:
-        log_file = os.path.join(args.output, args.log_file)
-        DLLogger.init(backends=[JSONStreamBackend(Verbosity.DEFAULT, log_file),
-                                StdOutBackend(Verbosity.VERBOSE)])
-    else:
-        DLLogger.init(backends=[])
-
-    for k,v in vars(args).items():
-        DLLogger.log(step="PARAMETER", data={k:v})
-    DLLogger.log(step="PARAMETER", data={'model_name':'Tacotron2_PyT'})
-
-    DLLogger.metadata('run_time', {'unit': 's'})
-    DLLogger.metadata('val_loss', {'unit': None})
-    DLLogger.metadata('train_items_per_sec', {'unit': 'items/s'})
-    DLLogger.metadata('val_items_per_sec', {'unit': 'items/s'})
-
     model_name = args.model_name
     parser = models.model_parser(model_name, parser)
     args, _ = parser.parse_known_args()
@@ -386,9 +380,6 @@ def main():
 
     if distributed_run:
         init_distributed(args, world_size, local_rank, args.group_name)
-
-    torch.cuda.synchronize()
-    run_start_time = time.perf_counter()
 
     model_config = models.get_model_config(model_name, args)
     model = models.get_model(model_name, model_config,
@@ -405,8 +396,19 @@ def main():
 
     try:
         sigma = args.sigma
+        # gate_positive_weight = args.gate_positive_weight
+        # use_guided_attention_loss = args.use_guided_attention_loss
+        # loss_attention_weight = args.loss_attention_weight
+        # diagonal_factor = args.diagonal_factor
+        # use_lpips_loss = args.use_lpips_loss
+
     except AttributeError:
         sigma = None
+        # gate_positive_weight = None
+        # use_guided_attention_loss = None
+        # loss_attention_weight = None
+        # diagonal_factor = None
+        # use_lpips_loss = None
 
     start_epoch = [0]
 
@@ -419,7 +421,9 @@ def main():
 
     start_epoch = start_epoch[0]
 
-    criterion = loss_functions.get_loss_function(model_name, sigma)
+    criterion = loss_functions.get_loss_function(model_name, sigma, args.gate_positive_weight,
+                                                 args.use_guided_attention_loss, args.loss_attention_weight,
+                                                 args.diagonal_factor, args.use_lpips_loss)
 
     try:
         n_frames_per_step = args.n_frames_per_step
@@ -430,6 +434,7 @@ def main():
         model_name, n_frames_per_step)
     trainset = data_functions.get_data_loader(
         model_name, args.dataset_path, args.training_files, args)
+
     if distributed_run:
         train_sampler = DistributedSampler(trainset, seed=(args.seed or 0))
         shuffle = False
@@ -448,13 +453,23 @@ def main():
     batch_to_gpu = data_functions.get_batch_to_gpu(model_name)
 
     iteration = 0
-    train_epoch_items_per_sec = 0.0
-    val_loss = 0.0
-    num_iters = 0
+    # train_epoch_items_per_sec = 0.0
+    # val_loss = 0.0
+    # num_iters = 0
+
+    if local_rank == 0:
+        wandb.init(project=args.wandb, sync_tensorboard=True, config=args)
+        if not os.path.isdir(args.output):
+            os.makedirs(args.output)
+            os.chmod(args.output, 0o775)
+        logger = Tacotron2Logger(os.path.join(args.output, args.logdir))
+    else:
+        logger = None
 
     model.train()
 
     for epoch in range(start_epoch, args.epochs):
+        print("Epoch: {}".format(epoch))
         torch.cuda.synchronize()
         epoch_start_time = time.perf_counter()
         # used to calculate avg items/sec over epoch
@@ -463,7 +478,7 @@ def main():
         train_epoch_items_per_sec = 0.0
 
         num_iters = 0
-        reduced_loss = 0
+        # reduced_loss = 0
 
         if distributed_run:
             train_loader.sampler.set_epoch(epoch)
@@ -471,8 +486,6 @@ def main():
         for i, batch in enumerate(train_loader):
             torch.cuda.synchronize()
             iter_start_time = time.perf_counter()
-            DLLogger.log(step=(epoch, i),
-                         data={'glob_iter/iters_per_epoch': str(iteration)+"/"+str(len(train_loader))})
 
             adjust_learning_rate(iteration, epoch, optimizer, args.learning_rate,
                                  args.anneal_steps, args.anneal_factor, local_rank)
@@ -480,10 +493,10 @@ def main():
             model.zero_grad()
             x, y, num_items = batch_to_gpu(batch)
 
-            #AMP upstream autocast
+            # AMP upstream autocast
             with torch.cuda.amp.autocast(enabled=args.amp):
                 y_pred = model(x)
-                loss = criterion(y_pred, y)
+                loss = criterion(y_pred, y, x)
 
             if distributed_run:
                 reduced_loss = reduce_tensor(loss.data, world_size).item()
@@ -494,8 +507,6 @@ def main():
             if np.isnan(reduced_loss):
                 raise Exception("loss is NaN")
 
-            DLLogger.log(step=(epoch,i), data={'train_loss': reduced_loss})
-
             num_iters += 1
 
             # accumulate number of items processed in this epoch
@@ -504,14 +515,12 @@ def main():
             if args.amp:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), args.grad_clip_thresh)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_thresh)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), args.grad_clip_thresh)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_thresh)
                 optimizer.step()
 
             model.zero_grad(set_to_none=True)
@@ -519,47 +528,31 @@ def main():
             torch.cuda.synchronize()
             iter_stop_time = time.perf_counter()
             iter_time = iter_stop_time - iter_start_time
-            items_per_sec = reduced_num_items/iter_time
+            items_per_sec = reduced_num_items / iter_time
             train_epoch_items_per_sec += items_per_sec
 
-            DLLogger.log(step=(epoch, i), data={'train_items_per_sec': items_per_sec})
-            DLLogger.log(step=(epoch, i), data={'train_iter_time': iter_time})
+            if local_rank == 0:
+                print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it {:.2f}items/s".format(
+                    iteration, reduced_loss, grad_norm, iter_time, items_per_sec))
+                logger.log_training(reduced_loss, grad_norm, args.learning_rate, iter_time, iteration)
+
+            if (iteration % args.iters_per_checkpoint == 0) and (args.bench_class == "" or args.bench_class == "train"):
+                validate(model_name, model, criterion, valset, iteration, args.batch_size, logger, world_size, collate_fn,
+                         distributed_run, args.bench_class == "perf-train", batch_to_gpu, args.amp, local_rank)
+
+                save_checkpoint(model, optimizer, scaler, epoch, model_config,
+                                args.output, args.model_name, local_rank, world_size)
+
             iteration += 1
 
-        torch.cuda.synchronize()
-        epoch_stop_time = time.perf_counter()
-        epoch_time = epoch_stop_time - epoch_start_time
-
-        DLLogger.log(step=(epoch,), data={'train_items_per_sec':
-                                          (train_epoch_items_per_sec/num_iters if num_iters > 0 else 0.0)})
-        DLLogger.log(step=(epoch,), data={'train_loss': reduced_loss})
-        DLLogger.log(step=(epoch,), data={'train_epoch_time': epoch_time})
-
-        val_loss, val_items_per_sec = validate(model, criterion, valset, epoch,
-                                               iteration, args.batch_size,
-                                               world_size, collate_fn,
-                                               distributed_run, args.bench_class=="perf-train",
-                                               batch_to_gpu,
-                                               args.amp)
-
-        if (epoch % args.epochs_per_checkpoint == 0) and (args.bench_class == "" or args.bench_class == "train"):
-            save_checkpoint(model, optimizer, scaler, epoch, model_config,
-                            args.output, args.model_name, local_rank, world_size)
-        if local_rank == 0:
-            DLLogger.flush()
-
-    torch.cuda.synchronize()
-    run_stop_time = time.perf_counter()
-    run_time = run_stop_time - run_start_time
-    DLLogger.log(step=tuple(), data={'run_time': run_time})
-    DLLogger.log(step=tuple(), data={'val_loss': val_loss})
-    DLLogger.log(step=tuple(), data={'train_loss': reduced_loss})
-    DLLogger.log(step=tuple(), data={'train_items_per_sec':
-                                     (train_epoch_items_per_sec/num_iters if num_iters > 0 else 0.0)})
-    DLLogger.log(step=tuple(), data={'val_items_per_sec': val_items_per_sec})
+        # torch.cuda.synchronize()
+        # epoch_stop_time = time.perf_counter()
+        # epoch_time = epoch_stop_time - epoch_start_time
+        #
+        # logger.add_scalar("train_epoch_time", epoch_time, epoch)
 
     if local_rank == 0:
-        DLLogger.flush()
+        wandb.finish()
 
 
 if __name__ == '__main__':
