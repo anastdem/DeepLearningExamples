@@ -47,6 +47,7 @@ class ParseFromConfigFile(argparse.Action):
                 underscore_k = k.replace('-', '_')
                 setattr(namespace, underscore_k, v)
 
+
 def get_mask_from_lengths(lengths):
     max_len = torch.max(lengths).item()
     ids = torch.arange(0, max_len, device=lengths.device, dtype=lengths.dtype)

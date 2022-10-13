@@ -1,12 +1,17 @@
 import atexit
 import glob
 import re
+import random
 from itertools import product
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pylab as plt
+import numpy as np
+
 import dllogger
 import torch
-import numpy as np
 from dllogger import StdOutBackend, JSONStreamBackend, Verbosity
 from torch.utils.tensorboard import SummaryWriter
 
@@ -19,7 +24,7 @@ class TBLogger:
     xyz_dummies: stretch the screen with empty plots so the legend would
                  always fit for other plots
     """
-    def __init__(self, enabled, log_dir, name, interval=1, dummies=True):
+    def __init__(self, enabled, log_dir, name, interval=1, dummies=False):
         self.enabled = enabled
         self.interval = interval
         self.cache = {}
@@ -52,6 +57,39 @@ class TBLogger:
             for stat in ('max', 'min', 'mean'):
                 self.log_value(step, f'grad_{stat}', getattr(np, stat)(norms),
                                stat=stat)
+
+    def save_figure_to_numpy(self, fig):
+        # save it to a numpy array.
+        data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        return data
+
+    def plot_spectrogram_to_numpy(self, spectrogram):
+        fig, ax = plt.subplots(figsize=(12, 3))
+        im = ax.imshow(spectrogram, aspect="auto", origin="lower",
+                       interpolation='none')
+        plt.colorbar(im, ax=ax)
+        plt.xlabel("Frames")
+        plt.ylabel("Channels")
+        plt.tight_layout()
+
+        fig.canvas.draw()
+        data = self.save_figure_to_numpy(fig)
+        plt.close()
+        return data
+
+    def log_image(self, y, y_pred, iteration):
+        if self.enabled:
+            idx = random.randint(0, y_pred[0].size(0) - 1)
+            self.summary_writer.add_image("mel_predicted",
+                                          self.plot_spectrogram_to_numpy(y_pred[0][idx].T.data.cpu().numpy()),
+                                          iteration,
+                                          dataformats='HWC')
+
+            self.summary_writer.add_image("mel_target",
+                                          self.plot_spectrogram_to_numpy(y[0][idx].data.cpu().numpy()),
+                                          iteration,
+                                          dataformats='HWC')
 
 
 def unique_log_fpath(fpath):
@@ -153,6 +191,10 @@ def log(step, tb_total_steps=None, data={}, subset='train'):
 
 def log_grads_tb(tb_total_steps, grads, tb_subset='train'):
     tb_loggers[tb_subset].log_grads(tb_total_steps, grads)
+
+
+def log_image_tb(y, y_pred, iteration, tb_subset='train'):
+    tb_loggers[tb_subset].log_image(y, y_pred, iteration)
 
 
 def parameters(data, verbosity=0, tb_subset=None):

@@ -46,7 +46,7 @@ def get_symbols(symbol_set='russian_basic'):
 
 
 def get_pad_idx(symbol_set='english_basic'):
-    if symbol_set in {'english_basic', 'english_basic_lowercase'}:
+    if symbol_set in {'english_basic', 'english_basic_lowercase', 'russian_basic'}:
         return 0
     else:
         raise Exception("{} symbol set not used yet".format(symbol_set))

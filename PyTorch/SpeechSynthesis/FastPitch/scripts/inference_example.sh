@@ -2,25 +2,31 @@
 
 export CUDNN_V8_API_ENABLED=1
 
-: ${DATASET_DIR:="data/LJSpeech-1.1"}
-: ${BATCH_SIZE:=32}
-: ${FILELIST:="phrases/devset10.tsv"}
+: ${DATASET_DIR:="data/RUSLAN22"}
+: ${OUTPUT_DIR:="./output/ruslan_val_gen_gst_hifi"}
+: ${BATCH_SIZE:=64}
+: ${FILELIST:="phrases/ruslan_val.txt"}
+#: ${FILELIST:="phrases/ruslan_mel_pitch_text_val.tsv"}
 : ${AMP:=false}
-: ${TORCHSCRIPT:=true}
+: ${TORCHSCRIPT:=false}
 : ${WARMUP:=0}
 : ${REPEATS:=1}
 : ${CPU:=false}
-: ${PHONE:=true}
+: ${PHONE:=false}
 
 # Mel-spectrogram generator (optional)
-: ${FASTPITCH="pretrained_models/fastpitch/nvidia_fastpitch_210824.pt"}
+#: ${FASTPITCH="checkpoints/fastpitch/ruslan_v0/FastPitch_checkpoint_1000.pt"}
+#: ${GST_ESTIMATOR=""}
+
+: ${FASTPITCH="checkpoints/fastpitch/ruslan_gst_v0/FastPitch_checkpoint_1000.pt"}
+: ${GST_ESTIMATOR="checkpoints/fastpitch/gst_est_ruslan_v0/GST_estimator_best_checkpoint.pt"}
 
 # Vocoder; set only one
-: ${WAVEGLOW="pretrained_models/waveglow/nvidia_waveglow256pyt_fp16.pt"}
-: ${HIFIGAN=""}
+#: ${WAVEGLOW="checkpoints/waveglow/multispeaker_v0/checkpoint_WaveGlow_last.pt"}
+: ${HIFIGAN="checkpoints/hifigan/multispeaker_v0/hifigan_gen_checkpoint_5960.pt"}
 
-[[ "$FASTPITCH" == "pretrained_models/fastpitch/nvidia_fastpitch_210824.pt" && ! -f "$FASTPITCH" ]] && { echo "Downloading $FASTPITCH from NGC..."; bash scripts/download_models.sh fastpitch; }
-[[ "$WAVEGLOW" == "pretrained_models/waveglow/nvidia_waveglow256pyt_fp16.pt" && ! -f "$WAVEGLOW" ]] && { echo "Downloading $WAVEGLOW from NGC..."; bash scripts/download_models.sh waveglow; }
+#[[ "$FASTPITCH" == "pretrained_models/fastpitch/nvidia_fastpitch_210824.pt" && ! -f "$FASTPITCH" ]] && { echo "Downloading $FASTPITCH from NGC..."; bash scripts/download_models.sh fastpitch; }
+#[[ "$WAVEGLOW" == "pretrained_models/waveglow/nvidia_waveglow256pyt_fp16.pt" && ! -f "$WAVEGLOW" ]] && { echo "Downloading $WAVEGLOW from NGC..."; bash scripts/download_models.sh waveglow; }
 
 # Synthesis
 : ${SPEAKER:=0}
@@ -60,6 +66,7 @@ ARGS+=" --speaker $SPEAKER"
 [ -n "$HIFIGAN" ]         && ARGS+=" --hifigan $HIFIGAN"
 [ -n "$WAVEGLOW" ]        && ARGS+=" --waveglow $WAVEGLOW"
 [ -n "$FASTPITCH" ]       && ARGS+=" --fastpitch $FASTPITCH"
+[ -n "$GST_ESTIMATOR" ]   && ARGS+=" --gst_estimator $GST_ESTIMATOR"
 [ "$PHONE" = true ]       && ARGS+=" --p-arpabet 1.0"
 
-python inference.py $ARGS "$@"
+CUDA_VISIBLE_DEVICES=1 python inference.py $ARGS "$@"

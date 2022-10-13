@@ -133,7 +133,7 @@ class TTSDataset(torch.utils.data.Dataset):
                  audiopaths_and_text,
                  text_cleaners,
                  n_mel_channels,
-                 symbol_set='english_basic',
+                 symbol_set='russian_basic',
                  p_arpabet=1.0,
                  n_speakers=1,
                  load_mel_from_disk=True,
@@ -253,7 +253,7 @@ class TTSDataset(torch.utils.data.Dataset):
 
     def get_text(self, text):
         text = self.tp.encode_text(text)
-        space = [self.tp.encode_text("A A")[1]]
+        space = [self.tp.encode_text("А А")[1]]
 
         if self.prepend_space_to_text:
             text = space + text

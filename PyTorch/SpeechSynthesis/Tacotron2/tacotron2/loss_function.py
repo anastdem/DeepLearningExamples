@@ -63,8 +63,8 @@ class Tacotron2Loss(nn.Module):
         grid = grid_text.unsqueeze(1) - grid_mel.unsqueeze(2)  # (B, M, T)
 
         # apply text and mel length masks
-        grid.transpose(2, 1)[~get_mask_from_lengths(input_lengths)] = 0.
-        grid[~get_mask_from_lengths(output_lengths)] = 0.
+        grid.transpose(2, 1)[get_mask_from_lengths(input_lengths)] = 0.
+        grid[get_mask_from_lengths(output_lengths)] = 0.
 
         W = 1 - torch.exp(-grid ** 2 / (2 * g ** 2))
         return W
@@ -105,4 +105,7 @@ class Tacotron2Loss(nn.Module):
                 + self.gate_positive_weight * gate_loss
                 + self.loss_attention_weight * attention_loss
                 + lpips_loss
-                )
+                ), {"mel_loss": mel_loss,
+                    "gate_loss": self.gate_positive_weight * gate_loss,
+                    "attention_loss": self.loss_attention_weight * attention_loss,
+                    "lpips_loss": lpips_loss}

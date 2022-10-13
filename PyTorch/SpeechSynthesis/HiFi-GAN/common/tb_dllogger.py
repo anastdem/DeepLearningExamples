@@ -32,7 +32,7 @@ class TBLogger:
     xyz_dummies: stretch the screen with empty plots so the legend would
                  always fit for other plots
     """
-    def __init__(self, enabled, log_dir, name, interval=1, dummies=True):
+    def __init__(self, enabled, log_dir, name, interval=1, dummies=False):
         self.enabled = enabled
         self.interval = interval
         self.cache = {}

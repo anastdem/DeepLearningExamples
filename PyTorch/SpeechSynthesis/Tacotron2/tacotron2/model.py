@@ -36,6 +36,7 @@ sys.path.append(abspath(dirname(__file__)+'/../'))
 from tacotron2_common.layers import ConvNorm, LinearNorm
 from tacotron2_common.utils import to_gpu, get_mask_from_lengths
 from tacotron2.gst import GST
+from tacotron2.speaker_encoder import SpeakerEncoder
 
 
 class LocationLayer(nn.Module):
@@ -638,11 +639,12 @@ class Tacotron2(nn.Module):
         else:
             self.gst = None
 
-        if n_speakers > 1:
-            self.speaker_emb = nn.Embedding(n_speakers, encoder_embedding_dim)
-        else:
-            self.speaker_emb = None
-        self.speaker_emb_weight = speaker_emb_weight
+        self.multispeaker = n_speakers > 1
+        if self.multispeaker:
+            # self.speaker_emb = nn.Embedding(n_speakers, encoder_embedding_dim)
+            self.speaker_enc = SpeakerEncoder(n_mel_channels, encoder_embedding_dim, 3)
+
+        # self.speaker_emb_weight = speaker_emb_weight
 
     def parse_batch(self, batch):
         text_padded, input_lengths, mel_padded, gate_padded, \
@@ -679,14 +681,15 @@ class Tacotron2(nn.Module):
 
         encoder_outputs = self.encoder(embedded_inputs, input_lengths)
 
+        if self.multispeaker:
+            # spk_emb = self.speaker_emb(speaker_id)
+            # spk_emb.mul_(self.speaker_emb_weight)
+            spk_emb = self.speaker_enc(targets.transpose(2, 1), input_lengths=output_lengths)
+            encoder_outputs += spk_emb.expand_as(encoder_outputs)
+
         if self.gst is not None:
             gst_outputs, alphas = self.gst(inputs=targets.transpose(2, 1), input_lengths=output_lengths)
             encoder_outputs += gst_outputs.expand_as(encoder_outputs)
-
-        if self.speaker_emb is not None:
-            spk_emb = self.speaker_emb(speaker_id)
-            spk_emb.mul_(self.speaker_emb_weight)
-            encoder_outputs += spk_emb
 
         mel_outputs, gate_outputs, alignments = self.decoder(encoder_outputs, targets, memory_lengths=input_lengths)
 
@@ -697,12 +700,17 @@ class Tacotron2(nn.Module):
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
             output_lengths)
 
-
-    def infer(self, inputs, input_lengths, speaker_id=0,  style_embed=None, gst_estimator=None):
+    def infer(self, inputs, input_lengths, speaker_embed=None, style_embed=None, gst_estimator=None):
 
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         encoder_outputs = self.encoder.infer(embedded_inputs, input_lengths)
-        speaker_id = torch.LongTensor(torch.tensor(speaker_id)).cuda()
+        # speaker_id = torch.LongTensor(torch.tensor(speaker_id)).cuda()
+        # print(speaker_id)
+        if self.multispeaker:
+            # spk_emb = self.speaker_emb(speaker_id)
+            # spk_emb.mul_(self.speaker_emb_weight)
+            # encoder_outputs += spk_emb
+            encoder_outputs += speaker_embed.expand_as(encoder_outputs)
 
         if self.gst is not None and style_embed is not None:
             encoder_outputs += style_embed.expand_as(encoder_outputs)
@@ -710,11 +718,6 @@ class Tacotron2(nn.Module):
         if self.gst is not None and gst_estimator is not None:
             style_embed = gst_estimator(encoder_outputs, input_lengths)
             encoder_outputs += style_embed.expand_as(encoder_outputs)
-
-        if self.speaker_emb is not None:
-            spk_emb = self.speaker_emb(speaker_id)
-            spk_emb.mul_(self.speaker_emb_weight)
-            encoder_outputs += spk_emb
 
         mel_outputs, gate_outputs, alignments, mel_lengths = self.decoder.infer(encoder_outputs, input_lengths)
 

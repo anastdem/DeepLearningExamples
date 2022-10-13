@@ -17,6 +17,7 @@ import itertools
 import os
 from functools import partial
 from itertools import islice
+import wandb
 
 import numpy as np
 import torch
@@ -236,18 +237,21 @@ def main():
     if distributed_run:
         init_distributed(args, args.world_size, args.local_rank)
 
-    metrics = Metrics(scopes=['train', 'train_avg'],
-                      benchmark_epochs=args.benchmark_epochs_num)
-    val_metrics = Metrics(scopes=['val'])
-    init_logger(args.output, args.log_file, args.ema_decay)
-    logger.parameters(vars(args), tb_subset='train')
-
     l2_promote()
     torch.backends.cudnn.benchmark = not args.disable_cudnn_benchmark
 
     train_setup = models.get_model_train_setup('HiFi-GAN', args)
     gen_config = models.get_model_config('HiFi-GAN', args)
     gen = models.get_model('HiFi-GAN', gen_config, 'cuda')
+
+    if args.local_rank == 0:
+        wandb.init(project="HiFi-GAN", sync_tensorboard=True, config=args)
+
+    metrics = Metrics(scopes=['train', 'train_avg'],
+                      benchmark_epochs=args.benchmark_epochs_num)
+    val_metrics = Metrics(scopes=['val'])
+    init_logger(args.output, args.log_file, args.ema_decay)
+    logger.parameters(vars(args), tb_subset='train')
 
     mpd = MultiPeriodDiscriminator(periods=args.mpd_periods,
                                    concat_fwd=args.concat_fwd).cuda()
@@ -494,6 +498,9 @@ def main():
         logger.log((), val_metrics, scope='val')
     else:
         print_once(f'Finished without training after epoch {args.epochs}.')
+
+    if args.local_rank == 0:
+        wandb.finish()
 
 
 if __name__ == '__main__':

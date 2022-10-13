@@ -39,6 +39,7 @@ from common.utils import mask_from_lens
 from fastpitch.alignment import b_mas, mas_width1
 from fastpitch.attention import ConvAttention
 from fastpitch.transformer import FFTransformer
+from fastpitch.gst import GST
 
 
 def regulate_len(durations, enc_out, pace: float = 1.0,
@@ -129,7 +130,9 @@ class FastPitch(nn.Module):
                  energy_predictor_kernel_size, energy_predictor_filter_size,
                  p_energy_predictor_dropout, energy_predictor_n_layers,
                  energy_embedding_kernel_size,
-                 n_speakers, speaker_emb_weight, pitch_conditioning_formants=1):
+                 n_speakers, speaker_emb_weight, use_gst, style_token_count, stl_attention_num_heads,
+                 estimator_hidden_dim, gst_n_layers, gst_n_heads, gst_d_head, gst_conv1d_kernel_size,
+                 p_gst_dropout, p_gst_dropatt, p_gst_dropemb, pitch_conditioning_formants=1):
         super(FastPitch, self).__init__()
 
         self.encoder = FFTransformer(
@@ -151,6 +154,13 @@ class FastPitch(nn.Module):
         else:
             self.speaker_emb = None
         self.speaker_emb_weight = speaker_emb_weight
+
+        if use_gst:
+            self.gst = GST(n_mel_channels, symbols_embedding_dim, style_token_count, stl_attention_num_heads,
+                           estimator_hidden_dim, gst_n_layers, gst_n_heads, gst_d_head, gst_conv1d_kernel_size,
+                           p_gst_dropout, p_gst_dropatt, p_gst_dropemb)
+        else:
+            self.gst = None
 
         self.duration_predictor = TemporalPredictor(
             in_fft_output_size,
@@ -264,6 +274,11 @@ class FastPitch(nn.Module):
         # Input FFT
         enc_out, enc_mask = self.encoder(inputs, conditioning=spk_emb)
 
+        # Add gst
+        if self.gst is not None:
+            gst_style, alphas = self.gst(mel_tgt.transpose(1, 2), mel_lens)
+            enc_out += gst_style.mean(dim=1).unsqueeze(1)
+
         # Predict durations
         log_dur_pred = self.duration_predictor(enc_out, enc_mask).squeeze(-1)
         dur_pred = torch.clamp(torch.exp(log_dur_pred) - 1, 0, max_duration)
@@ -326,7 +341,7 @@ class FastPitch(nn.Module):
 
     def infer(self, inputs, pace=1.0, dur_tgt=None, pitch_tgt=None,
               energy_tgt=None, pitch_transform=None, max_duration=75,
-              speaker=0):
+              speaker=0, gst_estimator=None):
 
         if self.speaker_emb is None:
             spk_emb = 0
@@ -338,6 +353,11 @@ class FastPitch(nn.Module):
 
         # Input FFT
         enc_out, enc_mask = self.encoder(inputs, conditioning=spk_emb)
+
+        if self.gst is not None and gst_estimator is not None:
+            enc_lens = enc_mask.sum(dim=1).squeeze(1)
+            gst_pred = gst_estimator(enc_out, enc_lens)
+            enc_out += gst_pred.unsqueeze(1)
 
         # Predict durations
         log_dur_pred = self.duration_predictor(enc_out, enc_mask).squeeze(-1)

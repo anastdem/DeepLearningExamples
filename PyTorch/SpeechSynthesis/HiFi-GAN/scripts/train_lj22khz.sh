@@ -6,22 +6,22 @@ export OMP_NUM_THREADS=1
 export CUDNN_V8_API_ENABLED=1  # Keep the flag for older containers
 export TORCH_CUDNN_V8_API_ENABLED=1
 
-: ${NUM_GPUS:=8}
+: ${NUM_GPUS:=2}
 : ${BATCH_SIZE:=16}
 : ${AMP:=false}
 : ${EPOCHS:=6500}
-: ${OUTPUT_DIR:="results/hifigan_lj22khz"}
+: ${OUTPUT_DIR:="checkpoints/hifigan/multispeaker_v0"}
 : ${LOG_FILE:=$OUTPUT_DIR/nvlog.json}
-: ${DATASET_DIR:="data/LJSpeech-1.1"}
-: ${TRAIN_FILELIST:="data/filelists/ljs_audio_train.txt"}
-: ${VAL_FILELIST:="data/filelists/ljs_audio_val.txt"}
+: ${DATASET_DIR:="."}
+: ${TRAIN_FILELIST:="data/filelists/multispeaker_audio_text_train.txt"}
+: ${VAL_FILELIST:="data/filelists/multispeaker_audio_text_val.txt"}
 # Intervals are specified in # of epochs
 : ${VAL_INTERVAL:=10}
 : ${SAMPLES_INTERVAL:=100}
 : ${CHECKPOINT_INTERVAL:=10}
 : ${LEARNING_RATE:=0.0003}
 : ${LEARNING_RATE_DECAY:=0.9998}
-: ${GRAD_ACCUMULATION:=1}
+: ${GRAD_ACCUMULATION:=4}
 : ${RESUME:=true}
 
 : ${FINE_TUNE_DIR:=""}
@@ -60,4 +60,4 @@ ARGS+=" --samples_interval $SAMPLES_INTERVAL"
 [ -n "$BMARK_EPOCHS_NUM" ]    && ARGS+=" --benchmark_epochs_num $BMARK_EPOCHS_NUM"
 
 : ${DISTRIBUTED:="-m torch.distributed.launch --nproc_per_node $NUM_GPUS"}
-python $DISTRIBUTED train.py $ARGS "$@"
+CUDA_VISIBLE_DEVICES=2,3 python $DISTRIBUTED train.py $ARGS "$@"

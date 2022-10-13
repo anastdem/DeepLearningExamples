@@ -29,6 +29,7 @@ import argparse
 import copy
 import os
 import time
+import wandb
 from collections import defaultdict, OrderedDict
 
 import numpy as np
@@ -48,6 +49,9 @@ from common.utils import BenchmarkStats, Checkpointer, prepare_tmp
 from fastpitch.attn_loss_function import AttentionBinarizationLoss
 from fastpitch.data_function import batch_to_gpu, TTSCollate, TTSDataset
 from fastpitch.loss_function import FastPitchLoss
+
+import warnings
+warnings.filterwarnings("ignore")
 
 
 def parse_args(parser):
@@ -117,9 +121,9 @@ def parse_args(parser):
     data.add_argument('--validation-files', type=str, nargs='*',
                       required=True, help='Paths to validation filelists')
     data.add_argument('--text-cleaners', nargs='*',
-                      default=['english_cleaners'], type=str,
+                      default=['basic_cleaners'], type=str,
                       help='Type of text cleaners for input text')
-    data.add_argument('--symbol-set', type=str, default='english_basic',
+    data.add_argument('--symbol-set', type=str, default='russian_basic',
                       help='Define symbol set for input text')
     data.add_argument('--p-arpabet', type=float, default=0.0,
                       help='Probability of using arpabets instead of graphemes '
@@ -195,7 +199,7 @@ def init_distributed(args, world_size, rank):
 
 
 def validate(model, epoch, total_iter, criterion, valset, batch_size,
-             collate_fn, distributed_run, batch_to_gpu, ema=False):
+             collate_fn, distributed_run, batch_to_gpu, logger, ema=False):
     """Handles all the validation scoring and printing"""
     was_training = model.training
     model.eval()
@@ -232,9 +236,15 @@ def validate(model, epoch, total_iter, criterion, valset, batch_size,
         data=OrderedDict([
             ('loss', val_meta['loss'].item()),
             ('mel_loss', val_meta['mel_loss'].item()),
+            ('dur_loss', val_meta['duration_predictor_loss'].item()),
+            ('pitch_loss', val_meta['pitch_loss'].item()),
+            ('attn_loss', val_meta['attn_loss'].item()),
+            ('dur_error', val_meta['dur_error'].item()),
             ('frames/s', num_frames.item() / val_meta['took']),
             ('took', val_meta['took'])]),
         )
+
+    logger.log_image_tb(y, y_pred, total_iter, tb_subset='val_ema' if ema else 'val')
 
     if was_training:
         model.train()
@@ -300,14 +310,17 @@ def main():
     if args.ema_decay > 0.0:
         tb_subsets.append('val_ema')
 
-    logger.init(log_fpath, args.output, enabled=(args.local_rank == 0),
-                tb_subsets=tb_subsets)
-    logger.parameters(vars(args), tb_subset='train')
-
     parser = models.parse_model_args('FastPitch', parser)
     args, unk_args = parser.parse_known_args()
     if len(unk_args) > 0:
         raise ValueError(f'Invalid options {unk_args}')
+
+    if args.local_rank == 0:
+        wandb.init(project="FastPitch", sync_tensorboard=True, config=args)
+
+    logger.init(log_fpath, args.output, enabled=(args.local_rank == 0),
+                tb_subsets=tb_subsets)
+    logger.parameters(vars(args), tb_subset='train')
 
     torch.backends.cudnn.benchmark = args.cudnn_benchmark
 
@@ -423,7 +436,6 @@ def main():
             with torch.cuda.amp.autocast(enabled=args.amp):
                 y_pred = model(x)
                 loss, meta = criterion(y_pred, y)
-
                 if (args.kl_loss_start_epoch is not None
                         and epoch >= args.kl_loss_start_epoch):
 
@@ -485,6 +497,10 @@ def main():
 
                 iter_mel_loss = iter_meta['mel_loss'].item()
                 iter_kl_loss = iter_meta['kl_loss'].item()
+                iter_dur_loss = iter_meta['duration_predictor_loss'].item()
+                iter_pitch_loss = iter_meta['pitch_loss'].item()
+                iter_attn_loss = iter_meta['attn_loss'].item()
+                iter_dur_error = iter_meta['dur_error'].item()
                 iter_time = time.perf_counter() - iter_start_time
                 epoch_frames_per_sec += iter_num_frames / iter_time
                 epoch_loss += iter_loss
@@ -495,6 +511,10 @@ def main():
                     subset='train', data=OrderedDict([
                         ('loss', iter_loss),
                         ('mel_loss', iter_mel_loss),
+                        ('dur_loss', iter_dur_loss),
+                        ('pitch_loss', iter_pitch_loss),
+                        ('attn_loss', iter_attn_loss),
+                        ('dur_error', iter_dur_error),
                         ('kl_loss', iter_kl_loss),
                         ('kl_weight', kl_weight),
                         ('frames/s', iter_num_frames / iter_time),
@@ -524,16 +544,17 @@ def main():
                            epoch_time)
 
         validate(model, epoch, total_iter, criterion, valset, args.batch_size,
-                 collate_fn, distributed_run, batch_to_gpu)
+                 collate_fn, distributed_run, batch_to_gpu, logger)
 
         if args.ema_decay > 0:
-            validate(ema_model, epoch, total_iter, criterion, valset,
-                     args.batch_size, collate_fn, distributed_run, batch_to_gpu,
+            validate(ema_model, epoch, total_iter, criterion, valset, args.batch_size,
+                     collate_fn, distributed_run, batch_to_gpu, logger,
                      ema=True)
 
         # save before making sched.step() for proper loading of LR
         checkpointer.maybe_save(args, model, ema_model, optimizer, scaler,
                                 epoch, total_iter, model_config)
+
         logger.flush()
 
     # Finished training
@@ -541,7 +562,10 @@ def main():
         log((), tb_total_steps=None, subset='train_avg', data=bmark_stats.get(args.benchmark_epochs_num))
 
     validate(model, None, total_iter, criterion, valset, args.batch_size,
-             collate_fn, distributed_run, batch_to_gpu)
+             collate_fn, distributed_run, batch_to_gpu, logger)
+
+    if args.local_rank == 0:
+        wandb.finish()
 
 
 if __name__ == '__main__':

@@ -30,6 +30,7 @@ import models
 import torch
 import argparse
 import os
+import json
 import numpy as np
 from scipy.io.wavfile import write
 import matplotlib
@@ -51,9 +52,9 @@ def parse_args(parser):
     """
     Parse commandline arguments.
     """
-    parser.add_argument('-i', '--input', type=str, required=True,
+    parser.add_argument('-i', '--input', type=str, required=False,
                         help='full path to the input text (phareses separated by new line)')
-    parser.add_argument('-o', '--output', required=True,
+    parser.add_argument('-o', '--output', required=False,
                         help='output folder to save audio (file per phrase)')
     parser.add_argument('--suffix', type=str, default="", help="output filename suffix")
     parser.add_argument('--tacotron2', type=str,
@@ -63,6 +64,8 @@ def parse_args(parser):
     parser.add_argument('-s', '--sigma-infer', default=0.9, type=float)
     parser.add_argument('-d', '--denoising-strength', default=0.01, type=float)
     parser.add_argument('-sr', '--sampling-rate', default=22050, type=int,
+                        help='Sampling rate')
+    parser.add_argument('-bs', '--batch-size', default=64, type=int,
                         help='Sampling rate')
 
     run_mode = parser.add_mutually_exclusive_group()
@@ -77,6 +80,24 @@ def parse_args(parser):
                         help='Include warmup')
     parser.add_argument('--stft-hop-length', type=int, default=256,
                         help='STFT hop length for estimating audio length from mel size')
+
+    parser.add_argument('--text-cleaners', nargs='*',
+                         default=['basic_cleaners'], type=str,
+                         help='Type of text cleaners for input text')
+
+    audio = parser.add_argument_group('audio parameters')
+    audio.add_argument('--max-wav-value', default=32768.0, type=float,
+                       help='Maximum audiowave value')
+    audio.add_argument('--filter-length', default=1024, type=int,
+                       help='Filter length')
+    audio.add_argument('--hop-length', default=256, type=int,
+                       help='Hop (stride) length')
+    audio.add_argument('--win-length', default=1024, type=int,
+                       help='Window length')
+    audio.add_argument('--mel-fmin', default=0.0, type=float,
+                       help='Minimum mel frequency')
+    audio.add_argument('--mel-fmax', default=8000.0, type=float,
+                       help='Maximum mel frequency')
 
     return parser
 
@@ -140,41 +161,48 @@ def load_and_setup_model(model_name, parser, checkpoint, fp16_run, cpu_run, forw
 
 
 # taken from tacotron2/data_function.py:TextMelCollate.__call__
-def pad_sequences(batch):
+def pad_sequences(texts, speakers):
     # Right zero-pad all one-hot text sequences to max input length
     input_lengths, ids_sorted_decreasing = torch.sort(
-        torch.LongTensor([len(x) for x in batch]),
+        torch.LongTensor([len(x) for x in texts]),
         dim=0, descending=True)
     max_input_len = input_lengths[0]
 
-    text_padded = torch.LongTensor(len(batch), max_input_len)
+    text_padded = torch.LongTensor(len(texts), max_input_len)
     text_padded.zero_()
+    speaker_id = torch.LongTensor(len(speakers), 1)
     for i in range(len(ids_sorted_decreasing)):
-        text = batch[ids_sorted_decreasing[i]]
+        text = texts[ids_sorted_decreasing[i]]
         text_padded[i, :text.size(0)] = text
+        speaker_id[i] = speakers[ids_sorted_decreasing[i]]
 
-    return text_padded, input_lengths
-
-
-def prepare_input_sequence(texts, cpu_run=False):
-
-    d = []
-    for i,text in enumerate(texts):
-        d.append(torch.IntTensor(
-            text_to_sequence(text, ['basic_cleaners'])[:]))
-
-    text_padded, input_lengths = pad_sequences(d)
-    if not cpu_run:
-        text_padded = text_padded.cuda().long()
-        input_lengths = input_lengths.cuda().long()
-    else:
-        text_padded = text_padded.long()
-        input_lengths = input_lengths.long()
-
-    return text_padded, input_lengths
+    return text_padded, input_lengths, speaker_id
 
 
-class MeasureTime():
+def prepare_input_sequence(texts, speakers, batch_size=1, cpu_run=False):
+    batches = []
+
+    for b in range(0, len(texts), batch_size):
+
+        d = []
+        for i, text in enumerate(texts[b:b+batch_size]):
+            d.append(torch.IntTensor(
+                text_to_sequence(text, ['basic_cleaners'])[:]))
+
+        text_padded, input_lengths, spk = pad_sequences(d, speakers[b:b+batch_size])
+        if not cpu_run:
+            text_padded = text_padded.cuda().long()
+            input_lengths = input_lengths.cuda().long()
+            spk = spk.cuda().long()
+        else:
+            text_padded = text_padded.long()
+            input_lengths = input_lengths.long()
+            spk = spk.long()
+        batches.append((text_padded, input_lengths, spk))
+    return batches
+
+
+class MeasureTime:
     def __init__(self, measurements, key, cpu_run=False):
         self.measurements = measurements
         self.key = key
@@ -204,9 +232,9 @@ def main():
     log_file = os.path.join(args.output, args.log_file)
     DLLogger.init(backends=[JSONStreamBackend(Verbosity.DEFAULT, log_file),
                             StdOutBackend(Verbosity.VERBOSE)])
-    for k,v in vars(args).items():
-        DLLogger.log(step="PARAMETER", data={k:v})
-    DLLogger.log(step="PARAMETER", data={'model_name':'Tacotron2_PyT'})
+    for k, v in vars(args).items():
+        DLLogger.log(step="PARAMETER", data={k: v})
+    DLLogger.log(step="PARAMETER", data={'model_name': 'Tacotron2_PyT'})
 
     tacotron2 = load_and_setup_model('Tacotron2', parser, args.tacotron2,
                                      args.fp16, args.cpu, forward_is_infer=True)
@@ -218,16 +246,22 @@ def main():
 
     # jitted_tacotron2 = torch.jit.script(tacotron2)
 
-    texts = []
+    texts, speakers = [], []
     try:
         f = open(args.input, 'r', encoding='utf8')
-        texts = f.readlines()
+        for line in f:
+            parts = line.strip().split("|")
+            texts.append(parts[0])
+            if len(parts) > 1:
+                speakers.append(int(parts[1]))
+            else:
+                speakers.append(0)
     except:
         print("Could not read file")
         sys.exit(1)
 
     if args.include_warmup:
-        sequence = torch.randint(low=0, high=148, size=(1,50)).long()
+        sequence = torch.randint(low=0, high=148, size=(1, 50)).long()
         input_lengths = torch.IntTensor([sequence.size(1)]).long()
         if not args.cpu:
             sequence = sequence.cuda()
@@ -235,44 +269,44 @@ def main():
         for i in range(3):
             with torch.no_grad():
                 # mel, mel_lengths, _ = jitted_tacotron2(sequence, input_lengths)
-                mel, mel_lengths, _ = tacotron2(sequence, input_lengths)
+                mel, mel_lengths, _ = tacotron2(sequence, input_lengths, speakers)
                 _ = waveglow(mel)
 
     measurements = {}
 
-    sequences_padded, input_lengths = prepare_input_sequence(texts, args.cpu)
+    batches = prepare_input_sequence(texts, speakers, args.batch_size, args.cpu)
+    for j, b in enumerate(batches):
+        with torch.no_grad(), MeasureTime(measurements, "tacotron2_time", args.cpu):
+            # mel, mel_lengths, alignments = jitted_tacotron2(sequences_padded, input_lengths)
+            mel, mel_lengths, alignments = tacotron2(*b)
 
-    with torch.no_grad(), MeasureTime(measurements, "tacotron2_time", args.cpu):
-        # mel, mel_lengths, alignments = jitted_tacotron2(sequences_padded, input_lengths)
-        mel, mel_lengths, alignments = tacotron2(sequences_padded, input_lengths)
+        with torch.no_grad(), MeasureTime(measurements, "waveglow_time", args.cpu):
+            audios = waveglow(mel, sigma=args.sigma_infer)
+            audios = audios.float()
+        with torch.no_grad(), MeasureTime(measurements, "denoiser_time", args.cpu):
+            audios = denoiser(audios, strength=args.denoising_strength).squeeze(1)
 
-    with torch.no_grad(), MeasureTime(measurements, "waveglow_time", args.cpu):
-        audios = waveglow(mel, sigma=args.sigma_infer)
-        audios = audios.float()
-    with torch.no_grad(), MeasureTime(measurements, "denoiser_time", args.cpu):
-        audios = denoiser(audios, strength=args.denoising_strength).squeeze(1)
+        print("Stopping after", mel.size(2), "decoder steps")
+        tacotron2_infer_perf = mel.size(0)*mel.size(2)/measurements['tacotron2_time']
+        waveglow_infer_perf = audios.size(0)*audios.size(1)/measurements['waveglow_time']
 
-    print("Stopping after", mel.size(2), "decoder steps")
-    tacotron2_infer_perf = mel.size(0)*mel.size(2)/measurements['tacotron2_time']
-    waveglow_infer_perf = audios.size(0)*audios.size(1)/measurements['waveglow_time']
+        DLLogger.log(step=0, data={"tacotron2_items_per_sec": tacotron2_infer_perf})
+        DLLogger.log(step=0, data={"tacotron2_latency": measurements['tacotron2_time']})
+        DLLogger.log(step=0, data={"waveglow_items_per_sec": waveglow_infer_perf})
+        DLLogger.log(step=0, data={"waveglow_latency": measurements['waveglow_time']})
+        DLLogger.log(step=0, data={"denoiser_latency": measurements['denoiser_time']})
+        DLLogger.log(step=0, data={"latency": (measurements['tacotron2_time']+measurements['waveglow_time']+measurements['denoiser_time'])})
 
-    DLLogger.log(step=0, data={"tacotron2_items_per_sec": tacotron2_infer_perf})
-    DLLogger.log(step=0, data={"tacotron2_latency": measurements['tacotron2_time']})
-    DLLogger.log(step=0, data={"waveglow_items_per_sec": waveglow_infer_perf})
-    DLLogger.log(step=0, data={"waveglow_latency": measurements['waveglow_time']})
-    DLLogger.log(step=0, data={"denoiser_latency": measurements['denoiser_time']})
-    DLLogger.log(step=0, data={"latency": (measurements['tacotron2_time']+measurements['waveglow_time']+measurements['denoiser_time'])})
+        for i, audio in enumerate(audios):
 
-    for i, audio in enumerate(audios):
+            plt.imshow(alignments[i].float().data.cpu().numpy().T, aspect="auto", origin="lower")
+            figure_path = os.path.join(args.output, "alignment_" + str(j) + '_' + str(i) + args.suffix + ".png")
+            plt.savefig(figure_path)
 
-        plt.imshow(alignments[i].float().data.cpu().numpy().T, aspect="auto", origin="lower")
-        figure_path = os.path.join(args.output, "alignment_" + str(i) + args.suffix + ".png")
-        plt.savefig(figure_path)
-
-        audio = audio[:mel_lengths[i]*args.stft_hop_length]
-        # audio = audio/torch.max(torch.abs(audio))
-        audio_path = os.path.join(args.output, "audio_" + str(i) + args.suffix + ".wav")
-        write(audio_path, args.sampling_rate, audio.cpu().numpy())
+            audio = audio[:mel_lengths[i]*args.stft_hop_length]
+            audio = audio/torch.max(torch.abs(audio))
+            audio_path = os.path.join(args.output, "audio_" + + str(j) + '_' + str(i) + args.suffix + ".wav")
+            write(audio_path, args.sampling_rate, audio.cpu().numpy())
 
     DLLogger.flush()
 

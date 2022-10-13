@@ -127,4 +127,27 @@ def parse_fastpitch_args(parent, add_help=False):
     cond.add_argument('--speaker-emb-weight', type=float, default=1.0,
                       help='Scale speaker embedding')
 
+    gst = parser.add_argument_group('gst parameters')
+    gst.add_argument('--use_gst', action='store_true',
+                     help='Use gst tokens')
+    gst.add_argument('--style_token_count', default=10, type=int,
+                     help='Number of gst tokens')
+    gst.add_argument('--stl_attention_num_heads', default=8, type=int,
+                     help='Number of heads in gst tokens')
+    gst.add_argument('--estimator_hidden_dim', default=64, type=int,
+                     help='Hidden dim in stl block')
+    gst.add_argument('--gst_n_layers', default=6, type=int,
+                     help='Number of FFT blocks in GST Encoder')
+    gst.add_argument('--gst_n_heads', default=1, type=int,
+                     help='Number of attention heads in GST Encoder')
+    gst.add_argument('--gst_d_head', default=64, type=int,
+                     help='Dim of attention head in GST Encoder')
+    gst.add_argument('--gst_conv1d_kernel_size', default=3, type=int,
+                     help='Conv-1D kernel size in GST Encoder')
+    gst.add_argument('--p_gst_dropout', default=0.1, type=float,
+                     help='Dropout probability for gst')
+    gst.add_argument('--p_gst_dropatt', default=0.1, type=float,
+                     help='Multi-head attention dropout in gst')
+    gst.add_argument('--p_gst_dropemb', default=0.0, type=float,
+                     help='Dropout added to word+positional embeddings in gst')
     return parser

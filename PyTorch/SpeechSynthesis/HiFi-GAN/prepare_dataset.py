@@ -106,7 +106,7 @@ def main():
         dataset = TTSDataset(
             args.dataset_path,
             filelist,
-            text_cleaners=['english_cleaners_v2'],
+            text_cleaners=['basic_cleaners'],
             n_mel_channels=args.n_mel_channels,
             p_arpabet=0.0,
             n_speakers=args.n_speakers,

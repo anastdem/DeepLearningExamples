@@ -50,7 +50,7 @@ def waveglow_parser(parent, add_help=False):
                         help='Number of channels output to the loss function')
     parser.add_argument('--sigma', default=1.0, type=float,
                         help='Standard deviation used for sampling from Gaussian')
-    parser.add_argument('--segment-length', default=4000, type=int,
+    parser.add_argument('--segment-length', default=16000, type=int,
                         help='Segment length (audio samples) processed per iteration')
 
     # wavenet parameters

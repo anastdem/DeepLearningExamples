@@ -141,8 +141,8 @@ def parse_args(parser):
                        help='Maximum mel frequency')
 
     distributed = parser.add_argument_group('distributed setup')
-    # distributed.add_argument('--distributed-run', default=True, type=bool,
-    #                          help='enable distributed run')
+    distributed.add_argument('--distributed-run', default=True, type=bool,
+                             help='enable distributed run')
     distributed.add_argument('--rank', default=0, type=int,
                              help='Rank of the process, do not set! Done by multiproc module')
     distributed.add_argument('--world-size', default=1, type=int,
@@ -304,7 +304,7 @@ def validate(model_name, model, criterion, valset, iteration, batch_size, logger
             # AMP upstream autocast
             with torch.cuda.amp.autocast(enabled=amp_run):
                 y_pred = model(x)
-                loss = criterion(y_pred, y, x)
+                loss, loss_dict = criterion(y_pred, y, x)
 
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, world_size).item()
@@ -332,6 +332,8 @@ def validate(model_name, model, criterion, valset, iteration, batch_size, logger
                 logger.log_validation(val_loss, model, y, y_pred, iteration)
             else:
                 logger.add_scalar("validation.loss", val_loss, iteration)
+                for k, v in loss_dict.items():
+                    logger.add_scalar("validation." + k, v, iteration)
 
 
 
@@ -387,7 +389,7 @@ def main():
                              uniform_initialize_bn_weight=not args.disable_uniform_initialize_bn_weight)
 
     if distributed_run:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
                                  weight_decay=args.weight_decay)
@@ -396,19 +398,9 @@ def main():
 
     try:
         sigma = args.sigma
-        # gate_positive_weight = args.gate_positive_weight
-        # use_guided_attention_loss = args.use_guided_attention_loss
-        # loss_attention_weight = args.loss_attention_weight
-        # diagonal_factor = args.diagonal_factor
-        # use_lpips_loss = args.use_lpips_loss
 
     except AttributeError:
         sigma = None
-        # gate_positive_weight = None
-        # use_guided_attention_loss = None
-        # loss_attention_weight = None
-        # diagonal_factor = None
-        # use_lpips_loss = None
 
     start_epoch = [0]
 
@@ -458,7 +450,7 @@ def main():
     # num_iters = 0
 
     if local_rank == 0:
-        wandb.init(project=args.wandb, sync_tensorboard=True, config=args)
+        wandb.init(project="Tacotron2", sync_tensorboard=True, config=args)
         if not os.path.isdir(args.output):
             os.makedirs(args.output)
             os.chmod(args.output, 0o775)
@@ -496,7 +488,7 @@ def main():
             # AMP upstream autocast
             with torch.cuda.amp.autocast(enabled=args.amp):
                 y_pred = model(x)
-                loss = criterion(y_pred, y, x)
+                loss, loss_dict = criterion(y_pred, y, x)
 
             if distributed_run:
                 reduced_loss = reduce_tensor(loss.data, world_size).item()
@@ -535,12 +527,14 @@ def main():
                 print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it {:.2f}items/s".format(
                     iteration, reduced_loss, grad_norm, iter_time, items_per_sec))
                 logger.log_training(reduced_loss, grad_norm, args.learning_rate, iter_time, iteration)
+                for k, v in loss_dict.items():
+                    logger.add_scalar("training." + k, v, iteration)
 
             if (iteration % args.iters_per_checkpoint == 0) and (args.bench_class == "" or args.bench_class == "train"):
                 validate(model_name, model, criterion, valset, iteration, args.batch_size, logger, world_size, collate_fn,
                          distributed_run, args.bench_class == "perf-train", batch_to_gpu, args.amp, local_rank)
 
-                save_checkpoint(model, optimizer, scaler, epoch, model_config,
+                save_checkpoint(model, optimizer, scaler, iteration, model_config,
                                 args.output, args.model_name, local_rank, world_size)
 
             iteration += 1
@@ -548,7 +542,6 @@ def main():
         # torch.cuda.synchronize()
         # epoch_stop_time = time.perf_counter()
         # epoch_time = epoch_stop_time - epoch_start_time
-        #
         # logger.add_scalar("train_epoch_time", epoch_time, epoch)
 
     if local_rank == 0:

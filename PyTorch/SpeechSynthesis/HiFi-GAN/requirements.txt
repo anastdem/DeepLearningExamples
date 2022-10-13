@@ -7,3 +7,4 @@ pynvml==11.0.0
 pysoundfile
 scipy
 tensorboardX==2.0
+wandb

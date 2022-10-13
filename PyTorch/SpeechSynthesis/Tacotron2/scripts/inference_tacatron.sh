@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=1 python inference.py --tacotron2 ./checkpoints/tacotron2/ruslan_v0/checkpoint_Tacotron2_last.pt --waveglow ./checkpoints/waveglow/multispeaker_v0/checkpoint_WaveGlow_last.pt --wn-channels 256 -o ruslan_val_gen_fp32/ -i phrases/ruslan_val.txt -bs 32

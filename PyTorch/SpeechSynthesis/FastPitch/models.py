@@ -24,6 +24,7 @@ from fastpitch.model import FastPitch
 from fastpitch.model_jit import FastPitchJIT
 from hifigan.models import Generator
 
+
 try:
     from waveglow.model import WaveGlow
     from waveglow import model as glow
@@ -138,6 +139,18 @@ def get_model_config(model_name, args, ckpt_config=None):
             # energy conditioning
             energy_conditioning=args.energy_conditioning,
             energy_embedding_kernel_size=args.energy_embedding_kernel_size,
+            # gst
+            use_gst=args.use_gst,
+            style_token_count=args.style_token_count,
+            stl_attention_num_heads=args.stl_attention_num_heads,
+            estimator_hidden_dim=args.estimator_hidden_dim,
+            gst_n_layers=args.gst_n_layers,
+            gst_n_heads=args.gst_n_heads,
+            gst_d_head=args.gst_d_head,
+            gst_conv1d_kernel_size=args.gst_conv1d_kernel_size,
+            p_gst_dropout=args.p_gst_dropout,
+            p_gst_dropatt=args.p_gst_dropatt,
+            p_gst_dropemb=args.p_gst_dropemb,
         )
     elif model_name == 'HiFi-GAN':
         if args.hifigan_config is not None:
@@ -183,6 +196,7 @@ def get_model_config(model_name, args, ckpt_config=None):
         print(f'WARNING: Keys {missing_keys} missing from the loaded config; '
               'using args instead.')
 
+    print(missing_keys)
     assert all(v is not _missing for v in final_config.values())
     return final_config
 

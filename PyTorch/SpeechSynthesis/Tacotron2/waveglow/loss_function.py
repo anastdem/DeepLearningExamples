@@ -45,4 +45,4 @@ class WaveGlowLoss(torch.nn.Module):
 
         loss = torch.sum(
             z * z) / (2 * self.sigma * self.sigma) - log_s_total - log_det_W_total  # noqa: E501
-        return loss / (z.size(0) * z.size(1) * z.size(2))
+        return loss / (z.size(0) * z.size(1) * z.size(2)), None

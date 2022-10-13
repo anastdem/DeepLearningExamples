@@ -41,19 +41,21 @@ from fastpitch.pitch_transform import pitch_transform_custom
 from hifigan.data_function import MAX_WAV_VALUE, mel_spectrogram
 from hifigan.models import Denoiser
 from waveglow import model as glow
+from gst_estimator import StyleEmbeddingEstimator
 
 
 CHECKPOINT_SPECIFIC_ARGS = [
     'sampling_rate', 'hop_length', 'win_length', 'p_arpabet', 'text_cleaners',
-    'symbol_set', 'max_wav_value', 'prepend_space_to_text',
-    'append_space_to_text']
+    'symbol_set', 'max_wav_value']
+# 'prepend_space_to_text',
+#     'append_space_to_text']
 
 
 def parse_args(parser):
     """
     Parse commandline arguments.
     """
-    parser.add_argument('-i', '--input', type=str, required=True,
+    parser.add_argument('-i', '--input', type=str, required=False,
                         help='Full path to the input text (phareses separated by newlines)')
     parser.add_argument('-o', '--output', default=None,
                         help='Output folder to save audio (file per phrase)')
@@ -70,6 +72,8 @@ def parse_args(parser):
     parser.add_argument('--fastpitch', type=str, default=None, required=False,
                         help='Full path to the spectrogram generator .pt file '
                              '(skip to synthesize from ground truth mels)')
+    parser.add_argument('--gst_estimator', type=str, default=None, required=False,
+                        help='Full path to GST estimator model .pt file ')
     parser.add_argument('--waveglow', type=str, default=None, required=False,
                         help='Full path to a WaveGlow model .pt file')
     parser.add_argument('-s', '--waveglow-sigma-infer', default=0.9, type=float,
@@ -135,9 +139,9 @@ def parse_args(parser):
 
     txt = parser.add_argument_group('Text processing parameters')
     txt.add_argument('--text-cleaners', type=str, nargs='*',
-                     default=['english_cleaners_v2'],
+                     default=['basic_cleaners'],
                      help='Type of text cleaners for input text')
-    txt.add_argument('--symbol-set', type=str, default='english_basic',
+    txt.add_argument('--symbol-set', type=str, default='russian_basic',
                      help='Define symbol set for input text')
     txt.add_argument('--p-arpabet', type=float, default=0.0, help='')
     txt.add_argument('--heteronyms-path', type=str,
@@ -170,8 +174,8 @@ def prepare_input_sequence(fields, device, symbol_set, text_cleaners,
     fields['text'] = [fields['text'][i] for i in order]
     fields['text_lens'] = torch.LongTensor([t.size(0) for t in fields['text']])
 
-    for t in fields['text']:
-        print(tp.sequence_to_text(t.numpy()))
+    # for t in fields['text']:
+    #     print(tp.sequence_to_text(t.numpy()))
 
     if load_mels:
         assert 'mel' in fields
@@ -324,6 +328,7 @@ def main():
     gen_train_setup = {}
     voc_train_setup = {}
     generator = None
+    gst_estimator = None
     vocoder = None
     denoiser = None
 
@@ -342,18 +347,26 @@ def main():
                                                    args.amp, device)
             model_train_setup = {}
             return model, model_train_setup
-        model, _, model_train_setup = models.load_and_setup_model(
+        model, model_config, model_train_setup = models.load_and_setup_model(
             model_name, parser, ckpt_path, args.amp, device,
             unk_args=unk_args, forward_is_infer=True, jitable=is_ts_based_infer)
 
         if is_ts_based_infer:
             model = torch.jit.script(model)
-        return model, model_train_setup
+        return model, model_config, model_train_setup
 
     if args.fastpitch is not None:
         gen_name = 'fastpitch'
-        generator, gen_train_setup = _load_pyt_or_ts_model('FastPitch',
+        generator, generator_config, gen_train_setup = _load_pyt_or_ts_model('FastPitch',
                                                            args.fastpitch)
+
+    if args.gst_estimator is not None:
+        print(f' GST Estimator: Loading {args.gst_estimator}...')
+        gst_estimator = StyleEmbeddingEstimator(generator_config).to(device)
+        gst_estimator_checkpoint = torch.load(args.gst_estimator)
+        gst_estimator.load_state_dict(gst_estimator_checkpoint['state_dict'])
+        gst_estimator.eval()
+
 
     if args.waveglow is not None:
         voc_name = 'waveglow'
@@ -378,7 +391,7 @@ def main():
 
     elif args.hifigan is not None:
         voc_name = 'hifigan'
-        vocoder, voc_train_setup = _load_pyt_or_ts_model('HiFi-GAN',
+        vocoder, vocoder_config, voc_train_setup = _load_pyt_or_ts_model('HiFi-GAN',
                                                          args.hifigan)
 
         if args.denoising_strength > 0.0:
@@ -406,6 +419,7 @@ def main():
             f'{k} mismatch in spectrogram generator and vocoder'
 
         val = v1 or v2
+        # print(k, v1, v2)
         if val and getattr(args, k) != val:
             src = 'generator' if v2 is None else 'vocoder'
             print(f'Overwriting args.{k}={getattr(args, k)} with {val} '
@@ -440,7 +454,7 @@ def main():
         with torch.no_grad():
             b = next(cycle)
             if generator is not None:
-                mel, *_ = generator(b['text'])
+                mel, *_ = generator(b['text'], gst_estimator=gst_estimator)
             else:
                 mel, mel_lens = b['mel'], b['mel_lens']
                 if args.amp:
@@ -464,7 +478,7 @@ def main():
     log = lambda s, d: DLLogger.log(step=s, data=d) if log_enabled else None
 
     for rep in (tqdm(range(reps), 'Inference') if reps > 1 else range(reps)):
-        for b in batches:
+        for j, b in enumerate(batches):
 
             if generator is None:
                 mel, mel_lens = b['mel'], b['mel_lens']
@@ -472,7 +486,7 @@ def main():
                     mel = mel.half()
             else:
                 with torch.no_grad(), gen_measures:
-                    mel, mel_lens, *_ = generator(b['text'], **gen_kw)
+                    mel, mel_lens, *_ = generator(b['text'], gst_estimator=gst_estimator, **gen_kw)
 
                 if args.report_mel_loss:
                     gen_mel_loss_sum += compute_mel_loss(
@@ -514,7 +528,7 @@ def main():
                             audio[-fade_len:] *= fade_w.to(audio.device)
 
                         audio = audio / torch.max(torch.abs(audio))
-                        fname = b['output'][i] if 'output' in b else f'audio_{i}.wav'
+                        fname = b['output'][i] if 'output' in b else f'audio_{j}_{i}.wav'
                         audio_path = Path(args.output, fname)
                         write(audio_path, args.sampling_rate, audio.cpu().numpy())
 
